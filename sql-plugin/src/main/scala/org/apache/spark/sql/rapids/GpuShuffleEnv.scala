@@ -102,6 +102,7 @@ object GpuShuffleEnv extends Logging {
     }
   }
 
+  // 判断是否用了Rapids Shuffle Manager
   def isRapidsShuffleAvailable: Boolean = {
     // the driver has `mgr` defined when this is checked
     val sparkEnv = SparkEnv.get

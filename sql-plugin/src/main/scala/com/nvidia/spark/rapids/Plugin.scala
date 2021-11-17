@@ -74,8 +74,16 @@ object RapidsPluginUtils extends Logging {
         s" To disable GPU support set `${RapidsConf.SQL_ENABLED}` to false")
   }
 
+  /*
+    1. 确保spark.sql.extensions中有com.nvidia.spark.rapids.SQLExecPlugin和com.nvidia.spark.udf.Plugin
+    2. 确保用的是Kryo或Java Serializer，Kryo时，设定了spark.kryo.registrator=com.nvidia.spark.rapids.GpuKryoRegistrator
+   */
   def fixupConfigs(conf: SparkConf): Unit = {
     // First add in the SQL executor plugin because that is what we need at a minimum
+    /*
+      取得当前spark.sql.extensions的参数，判断com.nvidia.spark.rapids.SQLExecPlugin,
+      以及com.nvidia.spark.udf.Plugin是否在列表中。如果不再，就添加进去。
+     */
     if (conf.contains(SQL_PLUGIN_CONF_KEY)) {
       for (pluginName <- Array(SQL_PLUGIN_NAME, UDF_PLUGIN_NAME)){
         val previousValue = conf.get(SQL_PLUGIN_CONF_KEY).split(",").map(_.trim)
@@ -89,6 +97,11 @@ object RapidsPluginUtils extends Logging {
       conf.set(SQL_PLUGIN_CONF_KEY, Array(SQL_PLUGIN_NAME,UDF_PLUGIN_NAME).mkString(","))
     }
 
+    /*
+      确保如果用了Kryo Serializer，必须设定spark.kryo.registrator=com.nvidia.spark.rapids.GpuKryoRegistrator
+      否则抛异常。
+      如果Serializer不是Kryo或Java，就抛异常
+     */
     val serializer = conf.get(SERIALIZER_CONF_KEY, JAVA_SERIALIZER_NAME)
     if (KRYO_SERIALIZER_NAME.equals(serializer)) {
       if (conf.contains(KRYO_REGISTRATOR_KEY)) {
@@ -127,8 +140,16 @@ object RapidsPluginUtils extends Logging {
  * The Spark driver plugin provided by the RAPIDS Spark plugin.
  */
 class RapidsDriverPlugin extends DriverPlugin with Logging {
+  /*
+    用于接收rapids executor的心跳，在Driver端，管理各个executor的注册，心跳管理
+    如果心跳过期会判定executor已经dead
+   */
   var rapidsShuffleHeartbeatManager: RapidsShuffleHeartbeatManager = null
 
+  /*
+    定义接收RapidsExecutorStartupMsg：表示Executor启动，注册executor id
+    和RapidsExecutorHeartbeatMsg：心跳
+   */
   override def receive(msg: Any): AnyRef = {
     if (rapidsShuffleHeartbeatManager == null) {
       throw new IllegalStateException(
@@ -146,11 +167,18 @@ class RapidsDriverPlugin extends DriverPlugin with Logging {
   override def init(
     sc: SparkContext, pluginContext: PluginContext): java.util.Map[String, String] = {
     val sparkConf = pluginContext.conf
+    /*
+      修补一些参数的配置
+     */
     RapidsPluginUtils.fixupConfigs(sparkConf)
     val conf = new RapidsConf(sparkConf)
 
+    /*
+      如果设定要用RapidsShuffle，就初始化RapidsShuffleManager
+     */
     if (GpuShuffleEnv.isRapidsShuffleAvailable) {
       GpuShuffleEnv.initShuffleManager()
+      // 如果设定了spark.rapids.shuffle.transport.earlyStart=true，就创建rapidsShuffleHeartbeatManager
       if (conf.shuffleTransportEarlyStart) {
         rapidsShuffleHeartbeatManager =
           new RapidsShuffleHeartbeatManager(
@@ -177,6 +205,11 @@ class RapidsExecutorPlugin extends ExecutorPlugin with Logging {
       // Compare if the cudf version mentioned in the classpath is equal to the version which
       // plugin expects. If there is a version mismatch, throw error. This check can be disabled
       // by setting this config spark.rapids.cudfVersionOverride=true
+      /*
+        比较cudf.jar中的cudf-java-version-info.properties文件中的version，
+        和rapids-4-spark.jar中rapids4spark-version-info.properties中cudf的expected version
+        可以通过spark.rapids.cudfVersionOverride=true来skip这个判断
+       */
       checkCudfVersion(conf)
 
       // we rely on the Rapids Plugin being run with 1 GPU per executor so we can initialize
@@ -185,6 +218,7 @@ class RapidsExecutorPlugin extends ExecutorPlugin with Logging {
         logInfo("Initializing memory from Executor Plugin")
         GpuDeviceManager.initializeGpuAndMemory(pluginContext.resources().asScala.toMap)
         if (GpuShuffleEnv.isRapidsShuffleAvailable) {
+          // 这里RapidsShuffleManager是在哪里初始化的？？？
           GpuShuffleEnv.initShuffleManager()
           if (conf.shuffleTransportEarlyStart) {
             logInfo("Initializing shuffle manager heartbeats")
@@ -194,6 +228,7 @@ class RapidsExecutorPlugin extends ExecutorPlugin with Logging {
         }
       }
 
+      // 初始化concurrent的semaphore
       val concurrentGpuTasks = conf.concurrentGpuTasks
       logInfo(s"The number of concurrent GPU tasks allowed is $concurrentGpuTasks")
       GpuSemaphore.initialize(concurrentGpuTasks)

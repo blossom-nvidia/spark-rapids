@@ -577,7 +577,7 @@ private object GpuRowToColumnConverter {
   }
 }
 
-class RowToColumnarIterator(
+class 8yhyhhRowToColumnarIterator(
     rowIter: Iterator[InternalRow],
     localSchema: StructType,
     localGoal: CoalesceSizeGoal,

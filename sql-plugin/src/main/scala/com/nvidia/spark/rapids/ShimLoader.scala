@@ -125,6 +125,9 @@ object ShimLoader extends Logging {
     s"org.apache.spark.sql.rapids.shims.$shimId.RapidsShuffleInternalManager"
   }
 
+  /*
+    Get the serializer from SparkEnv, and find the URLClassLoader from it.
+   */
   private def serializerClassloader(): Option[ClassLoader] = {
     // Hypothesis: serializer is the most universal way to intercept classloaders
 
@@ -206,6 +209,10 @@ object ShimLoader extends Logging {
     }
   }
 
+  /*
+    Try to call URLClassloader.addURL to add a new class path of
+      spark3xx-common, spark301(the specific version)
+   */
   private def updateSparkClassLoader(): Unit = {
     // TODO propose a proper addClassPathURL API to Spark similar to addJar but
     //  accepting non-file-based URI
@@ -251,6 +258,9 @@ object ShimLoader extends Logging {
 
   private val SERVICE_LOADER_PREFIX = "META-INF/services/"
 
+  /*
+    返回对应spark版本的ServiceProvider的类名（包括package名）
+   */
   private def detectShimProvider(): String = {
     val sparkVersion = getSparkVersion
     logInfo(s"Loading shim for Spark version: $sparkVersion")
@@ -280,6 +290,20 @@ object ShimLoader extends Logging {
     }
 
     val serviceProviderListPath = SERVICE_LOADER_PREFIX + classOf[SparkShimServiceProvider].getName
+    /* 这里从META_INF/services/com.nvidia.spark.rapids.SparkShimServiceProvider文件中，读取定义的serviceProvider
+       一共有以下定义
+      com.nvidia.spark.rapids.shims.spark301.SparkShimServiceProvider
+      com.nvidia.spark.rapids.shims.spark302.SparkShimServiceProvider
+      com.nvidia.spark.rapids.shims.spark303.SparkShimServiceProvider
+      com.nvidia.spark.rapids.shims.spark304.SparkShimServiceProvider
+      com.nvidia.spark.rapids.shims.spark311.SparkShimServiceProvider
+      com.nvidia.spark.rapids.shims.spark312.SparkShimServiceProvider
+      com.nvidia.spark.rapids.shims.spark313.SparkShimServiceProvider
+      com.nvidia.spark.rapids.shims.spark311cdh.SparkShimServiceProvider
+      com.nvidia.spark.rapids.shims.spark320.SparkShimServiceProvider
+      com.nvidia.spark.rapids.shims.spark301db.SparkShimServiceProvider
+      com.nvidia.spark.rapids.shims.spark311db.SparkShimServiceProvider
+     */
     val serviceProviderList = shimServiceProviderOverrideClassName
       .map(clsName => Seq(clsName)).getOrElse {
         thisClassLoader.getResources(serviceProviderListPath)
@@ -290,6 +314,16 @@ object ShimLoader extends Logging {
     assert(serviceProviderList.nonEmpty, "Classpath should contain the resource for " +
         serviceProviderListPath)
 
+    /*
+      这里针对每一个serviceProvider,进行处理，生成MutableURLClassLoader，看样子是按先后顺序去搜索class，
+      shimURL是rootURL/对应的spark版本（比如spark301，spark302等，从serviceProvider定义中取倒数第二段），
+      即从com.nvidia.spark.rapids.shims.spark301.SparkShimServiceProvider中获取spark301。
+      shimCommonURL是rootURL/spark3xx-common,所有spark都相同的class，估计是dedup之后放到一起的class文件，
+      最后是thisClassLoader,我理解就是从rootURL中查找class的loader。因为当前类就是在rootURL下。
+      奇怪的是，这里为什么对list进行map处理后，再用find找出对应的那个，这样一来，比如要的是spark320，
+      那么从301到312都会先经过一次构建ClassLoader，但其实是不需要的。不太了解Scala的处理是否对此有优化，
+      但我觉得这段代码应该是没有优化的。可以先找到对应的provider后在构建ClassLoader。
+     */
     val shimServiceProviderOpt = serviceProviderList.flatMap { shimServiceProviderStr =>
       val mask = shimIdFromPackageName(shimServiceProviderStr)
       try {

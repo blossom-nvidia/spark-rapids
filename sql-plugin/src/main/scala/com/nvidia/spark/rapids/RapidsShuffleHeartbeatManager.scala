@@ -190,6 +190,7 @@ class RapidsShuffleHeartbeatEndpoint(pluginContext: PluginContext, conf: RapidsC
   private[this] val heartbeatIntervalMillis =
     conf.shuffleTransportEarlyStartHeartbeatInterval
 
+  // 启动一个线程，作为发送heartbeat
   private[this] val executorService: ScheduledExecutorService =
     Executors.newSingleThreadScheduledExecutor(new ThreadFactoryBuilder()
       .setNameFormat("rapids-shuffle-hb")
@@ -237,7 +238,7 @@ class RapidsShuffleHeartbeatEndpoint(pluginContext: PluginContext, conf: RapidsC
   }
 
   def registerShuffleHeartbeat(): Unit = {
-    val rapidsShuffleManager = SparkEnv.get.shuffleManager.asInstanceOf[Proxy].self
+    val rapidsShuffleManager = SparkEnv.get.shuffleManager.asInstanceOf[Proxy].sexlf
         .asInstanceOf[RapidsShuffleInternalManagerBase]
     if (rapidsShuffleManager.isDriver) {
       logDebug("Local mode detected. Skipping shuffle heartbeat registration.")
